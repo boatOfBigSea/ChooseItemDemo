@@ -2,31 +2,38 @@
 //  ChooseItemDemoTests.m
 //  ChooseItemDemoTests
 //
-//  Created by user1 on 16/4/20.
-//  Copyright (c) 2016年 Futaihua. All rights reserved.
+//  Created by zkm on 16/4/20.
+//  Copyright © 2016年 Foxconn. All rights reserved.
 //
 
-#import "ChooseItemDemoTests.h"
+#import <XCTest/XCTest.h>
+
+@interface ChooseItemDemoTests : XCTestCase
+
+@end
 
 @implementation ChooseItemDemoTests
 
-- (void)setUp
-{
+- (void)setUp {
     [super setUp];
-    
-    // Set-up code here.
+    // Put setup code here. This method is called before the invocation of each test method in the class.
 }
 
-- (void)tearDown
-{
-    // Tear-down code here.
-    
+- (void)tearDown {
+    // Put teardown code here. This method is called after the invocation of each test method in the class.
     [super tearDown];
 }
 
-- (void)testExample
-{
-    STFail(@"Unit tests are not implemented yet in ChooseItemDemoTests");
+- (void)testExample {
+    // This is an example of a functional test case.
+    // Use XCTAssert and related functions to verify your tests produce the correct results.
+}
+
+- (void)testPerformanceExample {
+    // This is an example of a performance test case.
+    [self measureBlock:^{
+        // Put the code you want to measure the time of here.
+    }];
 }
 
 @end
