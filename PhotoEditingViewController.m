@@ -119,19 +119,84 @@
 }
 
 - (void)requestPhotoLibraryPermission {
-    PHAuthorizationStatus status = [PHPhotoLibrary authorizationStatus];
+    PHAuthorizationStatus status;
     
-    if (status == PHAuthorizationStatusNotDetermined) {
-        [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (status != PHAuthorizationStatusAuthorized) {
-                    [self showPermissionAlert];
-                }
-            });
-        }];
-    } else if (status != PHAuthorizationStatusAuthorized) {
-        [self showPermissionAlert];
+    // iOS 14+ 使用新的权限API
+    if (@available(iOS 14, *)) {
+        status = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
+        
+        if (status == PHAuthorizationStatusNotDetermined) {
+            [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite handler:^(PHAuthorizationStatus status) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self handleAuthorizationStatus:status];
+                });
+            }];
+        } else {
+            [self handleAuthorizationStatus:status];
+        }
+    } else {
+        // iOS 13及以下的兼容性处理
+        status = [PHPhotoLibrary authorizationStatus];
+        
+        if (status == PHAuthorizationStatusNotDetermined) {
+            [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self handleAuthorizationStatus:status];
+                });
+            }];
+        } else {
+            [self handleAuthorizationStatus:status];
+        }
     }
+}
+
+- (void)handleAuthorizationStatus:(PHAuthorizationStatus)status {
+    switch (status) {
+        case PHAuthorizationStatusAuthorized:
+            // 完全访问权限
+            NSLog(@"获得完整相册访问权限");
+            break;
+            
+        case PHAuthorizationStatusLimited:
+            // iOS 14+ 有限访问权限
+            NSLog(@"获得有限相册访问权限");
+            if (@available(iOS 14, *)) {
+                [self showLimitedAccessAlert];
+            }
+            break;
+            
+        case PHAuthorizationStatusDenied:
+        case PHAuthorizationStatusRestricted:
+            [self showPermissionAlert];
+            break;
+            
+        case PHAuthorizationStatusNotDetermined:
+            // 这种情况通常不会发生在回调中
+            break;
+    }
+}
+
+- (void)showLimitedAccessAlert {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"有限相册访问"
+                                                                   message:@"当前为有限相册访问模式。为了获得最佳体验，建议允许访问所有照片。\n\n在有限访问模式下，某些照片的编辑参数可能无法完整获取。"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    
+    UIAlertAction *settingsAction = [UIAlertAction actionWithTitle:@"去设置"
+                                                             style:UIAlertActionStyleDefault
+                                                           handler:^(UIAlertAction * _Nonnull action) {
+        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:UIApplicationOpenSettingsURLString]
+                                           options:@{}
+                                 completionHandler:nil];
+    }];
+    
+    UIAlertAction *continueAction = [UIAlertAction actionWithTitle:@"继续使用"
+                                                             style:UIAlertActionStyleDefault
+                                                           handler:nil];
+    
+    [alert addAction:settingsAction];
+    [alert addAction:continueAction];
+    
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)showPermissionAlert {
@@ -162,6 +227,14 @@
     config.selectionLimit = 1;
     config.filter = [PHPickerFilter imagesFilter];
     
+    // 设置为相册库模式，这样更容易获取assetIdentifier
+    if (@available(iOS 15.0, *)) {
+        config.mode = PHPickerModeCompact;
+    }
+    
+    // 尝试获取完整的照片库访问权限
+    config.preferredAssetRepresentationMode = PHPickerConfigurationAssetRepresentationModeOriginal;
+    
     PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:config];
     picker.delegate = self;
     
@@ -179,17 +252,7 @@
     
     PHPickerResult *result = results.firstObject;
     
-    // 获取asset identifier
-    NSString *assetIdentifier = result.assetIdentifier;
-    if (assetIdentifier) {
-        PHFetchResult *fetchResult = [PHAsset fetchAssetsWithLocalIdentifiers:@[assetIdentifier] options:nil];
-        if (fetchResult.count > 0) {
-            self.selectedAsset = fetchResult.firstObject;
-            [self extractEditingParameters:self.selectedAsset];
-        }
-    }
-    
-    // 加载图片显示
+    // 先加载图片显示
     [result.itemProvider loadObjectOfClass:[UIImage class] completionHandler:^(__kindof id<NSItemProviderReading>  _Nullable object, NSError * _Nullable error) {
         if ([object isKindOfClass:[UIImage class]]) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -197,6 +260,144 @@
             });
         }
     }];
+    
+    // 尝试获取asset identifier
+    NSString *assetIdentifier = result.assetIdentifier;
+    if (assetIdentifier) {
+        // 方法1：通过asset identifier获取PHAsset
+        PHFetchResult *fetchResult = [PHAsset fetchAssetsWithLocalIdentifiers:@[assetIdentifier] options:nil];
+        if (fetchResult.count > 0) {
+            self.selectedAsset = fetchResult.firstObject;
+            [self extractEditingParameters:self.selectedAsset];
+            return;
+        }
+    }
+    
+    // 方法2：如果assetIdentifier为nil，尝试通过图片数据获取PHAsset
+    [self findAssetFromPickerResult:result];
+}
+
+- (void)findAssetFromPickerResult:(PHPickerResult *)result {
+    // 方法2A：尝试通过图片数据和元数据匹配PHAsset
+    [result.itemProvider loadDataRepresentationForTypeIdentifier:@"public.image" completionHandler:^(NSData * _Nullable data, NSError * _Nullable error) {
+        if (data) {
+            // 从图片数据中提取信息
+            CIImage *ciImage = [CIImage imageWithData:data];
+            if (ciImage && ciImage.properties) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    // 尝试通过图片属性匹配相册中的照片
+                    [self findAssetByImageProperties:ciImage.properties imageData:data];
+                });
+            } else {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    // 如果无法获取PHAsset，直接从图片数据提取基础信息
+                    [self extractParametersFromImageData:data];
+                });
+            }
+        } else {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self showAlert:@"无法加载图片" message:@"请重试或选择其他照片"];
+            });
+        }
+    }];
+}
+
+- (void)findAssetByImageProperties:(NSDictionary *)properties imageData:(NSData *)imageData {
+    // 获取图片的创建日期和其他标识信息
+    NSDictionary *exifDict = properties[(NSString *)kCGImagePropertyExifDictionary];
+    NSDictionary *tiffDict = properties[(NSString *)kCGImagePropertyTIFFDictionary];
+    
+    NSDate *dateTime = nil;
+    if (exifDict) {
+        NSString *dateTimeString = exifDict[(NSString *)kCGImagePropertyExifDateTimeOriginal];
+        if (dateTimeString) {
+            NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+            formatter.dateFormat = @"yyyy:MM:dd HH:mm:ss";
+            dateTime = [formatter dateFromString:dateTimeString];
+        }
+    }
+    
+    // 创建获取选项
+    PHFetchOptions *fetchOptions = [[PHFetchOptions alloc] init];
+    fetchOptions.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"creationDate" ascending:NO]];
+    
+    if (dateTime) {
+        // 如果有创建日期，在该日期前后搜索
+        NSDate *startDate = [dateTime dateByAddingTimeInterval:-60]; // 前后1分钟
+        NSDate *endDate = [dateTime dateByAddingTimeInterval:60];
+        fetchOptions.predicate = [NSPredicate predicateWithFormat:@"creationDate >= %@ AND creationDate <= %@", startDate, endDate];
+    } else {
+        // 如果没有日期，获取最近的100张照片进行匹配
+        fetchOptions.fetchLimit = 100;
+    }
+    
+    PHFetchResult *assets = [PHAsset fetchAssetsWithMediaType:PHAssetMediaTypeImage options:fetchOptions];
+    
+    if (assets.count > 0) {
+        // 尝试通过图片大小和其他属性匹配
+        [self matchAssetByComparison:assets imageData:imageData properties:properties];
+    } else {
+        // 如果找不到匹配的PHAsset，直接从图片数据提取参数
+        [self extractParametersFromImageData:imageData];
+    }
+}
+
+- (void)matchAssetByComparison:(PHFetchResult<PHAsset *> *)assets imageData:(NSData *)imageData properties:(NSDictionary *)properties {
+    // 获取图片尺寸用于匹配
+    NSNumber *pixelWidth = properties[(NSString *)kCGImagePropertyPixelWidth];
+    NSNumber *pixelHeight = properties[(NSString *)kCGImagePropertyPixelHeight];
+    
+    __block PHAsset *matchedAsset = nil;
+    __block NSUInteger processedCount = 0;
+    NSUInteger totalCount = assets.count;
+    
+    [assets enumerateObjectsUsingBlock:^(PHAsset * _Nonnull asset, NSUInteger idx, BOOL * _Nonnull stop) {
+        // 首先通过尺寸进行初步筛选
+        if (pixelWidth && pixelHeight) {
+            if (asset.pixelWidth == pixelWidth.integerValue && asset.pixelHeight == pixelHeight.integerValue) {
+                matchedAsset = asset;
+                *stop = YES;
+                return;
+            }
+        }
+        
+        processedCount++;
+        
+        // 如果处理完所有资源都没找到精确匹配，使用第一个作为备选
+        if (processedCount == totalCount && !matchedAsset && idx == 0) {
+            matchedAsset = asset;
+        }
+    }];
+    
+    if (matchedAsset) {
+        self.selectedAsset = matchedAsset;
+        [self extractEditingParameters:matchedAsset];
+    } else {
+        // 如果还是找不到，直接从图片数据提取参数
+        [self extractParametersFromImageData:imageData];
+    }
+}
+
+- (void)extractParametersFromImageData:(NSData *)imageData {
+    // 直接从图片数据提取可用的参数
+    CIImage *ciImage = [CIImage imageWithData:imageData];
+    if (ciImage && ciImage.properties) {
+        NSMutableDictionary *parameters = [NSMutableDictionary dictionary];
+        [self extractParametersFromProperties:ciImage.properties intoDict:parameters];
+        
+        // 添加默认编辑参数
+        [self addDefaultEditingParameters:parameters];
+        
+        // 添加提示信息
+        parameters[@"source"] = @"图片数据";
+        parameters[@"note"] = @"无法获取完整编辑历史，显示基础参数";
+        
+        self.editingParameters = [parameters copy];
+        [self updateParametersDisplay];
+        [self enableCopyButton];
+    } else {
+        [self showAlert:@"无法解析图片" message:@"该图片可能不包含可提取的编辑参数"];
+    }
 }
 
 - (void)extractEditingParameters:(PHAsset *)asset {

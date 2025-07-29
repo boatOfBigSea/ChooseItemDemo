@@ -23,5 +23,11 @@
 - (void)importPhotoFromLibrary;
 - (void)copyEditingParameters;
 - (void)extractEditingParameters:(PHAsset *)asset;
+- (void)findAssetFromPickerResult:(PHPickerResult *)result;
+- (void)findAssetByImageProperties:(NSDictionary *)properties imageData:(NSData *)imageData;
+- (void)matchAssetByComparison:(PHFetchResult<PHAsset *> *)assets imageData:(NSData *)imageData properties:(NSDictionary *)properties;
+- (void)extractParametersFromImageData:(NSData *)imageData;
+- (void)handleAuthorizationStatus:(PHAuthorizationStatus)status;
+- (void)showLimitedAccessAlert;
 
 @end
