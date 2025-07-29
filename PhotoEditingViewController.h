@@ -29,5 +29,6 @@
 - (void)extractParametersFromImageData:(NSData *)imageData;
 - (void)handleAuthorizationStatus:(PHAuthorizationStatus)status;
 - (void)showLimitedAccessAlert;
+- (void)presentPhotoPickerWithPermissionStatus:(PHAuthorizationStatus)status;
 
 @end

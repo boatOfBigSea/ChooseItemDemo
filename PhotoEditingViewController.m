@@ -155,6 +155,7 @@
         case PHAuthorizationStatusAuthorized:
             // 完全访问权限
             NSLog(@"获得完整相册访问权限");
+            [self presentPhotoPickerWithPermissionStatus:status];
             break;
             
         case PHAuthorizationStatusLimited:
@@ -162,6 +163,8 @@
             NSLog(@"获得有限相册访问权限");
             if (@available(iOS 14, *)) {
                 [self showLimitedAccessAlert];
+                // 即使是有限权限，也可以使用picker
+                [self presentPhotoPickerWithPermissionStatus:status];
             }
             break;
             
@@ -223,20 +226,86 @@
 }
 
 - (void)importPhotoFromLibrary {
-    PHPickerConfiguration *config = [[PHPickerConfiguration alloc] init];
+    // 先检查权限状态
+    PHAuthorizationStatus status;
+    if (@available(iOS 14, *)) {
+        status = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
+    } else {
+        status = [PHPhotoLibrary authorizationStatus];
+    }
+    
+    // 如果没有权限，先请求权限
+    if (status == PHAuthorizationStatusNotDetermined) {
+        [self requestPhotoLibraryPermission];
+        return;
+    }
+    
+    // 如果权限被拒绝，显示提示
+    if (status == PHAuthorizationStatusDenied || status == PHAuthorizationStatusRestricted) {
+        [self showPermissionAlert];
+        return;
+    }
+    
+    // 创建picker配置
+    [self presentPhotoPickerWithPermissionStatus:status];
+}
+
+- (void)presentPhotoPickerWithPermissionStatus:(PHAuthorizationStatus)status {
+    NSLog(@"开始创建PHPickerViewController，当前权限状态: %ld", (long)status);
+    
+    // 关键修复：使用photoLibrary初始化PHPickerConfiguration
+    PHPhotoLibrary *photoLibrary = [PHPhotoLibrary sharedPhotoLibrary];
+    PHPickerConfiguration *config = [[PHPickerConfiguration alloc] initWithPhotoLibrary:photoLibrary];
+    
     config.selectionLimit = 1;
     config.filter = [PHPickerFilter imagesFilter];
     
     // 设置为相册库模式，这样更容易获取assetIdentifier
     if (@available(iOS 15.0, *)) {
         config.mode = PHPickerModeCompact;
+        NSLog(@"设置PHPickerMode为Compact");
     }
     
     // 尝试获取完整的照片库访问权限
     config.preferredAssetRepresentationMode = PHPickerConfigurationAssetRepresentationModeOriginal;
+    NSLog(@"设置preferredAssetRepresentationMode为Original");
+    
+    // 额外的配置尝试
+    if (@available(iOS 16.0, *)) {
+        // iOS 16+ 的额外配置
+        config.preselectedAssetIdentifiers = @[];
+    }
     
     PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:config];
     picker.delegate = self;
+    
+    // 调试信息
+    NSLog(@"PHPickerConfiguration配置完成:");
+    NSLog(@"- selectionLimit: %ld", (long)config.selectionLimit);
+    NSLog(@"- filter: %@", config.filter);
+    NSLog(@"- preferredAssetRepresentationMode: %ld", (long)config.preferredAssetRepresentationMode);
+    
+    // 如果是有限访问权限，给用户一个提示
+    if (@available(iOS 14, *)) {
+        if (status == PHAuthorizationStatusLimited) {
+            NSLog(@"⚠️ 当前为有限访问权限，某些照片的assetIdentifier可能为nil");
+            
+            // 尝试提示用户选择更多照片
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"提示"
+                                                                           message:@"当前为有限相册访问。为了获得最佳体验，请在选择照片时允许访问更多照片。"
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            
+            UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"知道了"
+                                                               style:UIAlertActionStyleDefault
+                                                             handler:^(UIAlertAction * _Nonnull action) {
+                [self presentViewController:picker animated:YES completion:nil];
+            }];
+            
+            [alert addAction:okAction];
+            [self presentViewController:alert animated:YES completion:nil];
+            return;
+        }
+    }
     
     [self presentViewController:picker animated:YES completion:nil];
 }
@@ -263,14 +332,34 @@
     
     // 尝试获取asset identifier
     NSString *assetIdentifier = result.assetIdentifier;
+    
+    // 调试信息
+    NSLog(@"PHPickerResult调试信息:");
+    NSLog(@"- assetIdentifier: %@", assetIdentifier ?: @"nil");
+    NSLog(@"- itemProvider: %@", result.itemProvider);
+    NSLog(@"- itemProvider.registeredTypeIdentifiers: %@", result.itemProvider.registeredTypeIdentifiers);
+    
+    // 检查当前权限状态
+    PHAuthorizationStatus currentStatus;
+    if (@available(iOS 14, *)) {
+        currentStatus = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
+        NSLog(@"- 当前权限状态: %ld", (long)currentStatus);
+    }
+    
     if (assetIdentifier) {
+        NSLog(@"✅ 成功获取到assetIdentifier，尝试获取PHAsset");
         // 方法1：通过asset identifier获取PHAsset
         PHFetchResult *fetchResult = [PHAsset fetchAssetsWithLocalIdentifiers:@[assetIdentifier] options:nil];
         if (fetchResult.count > 0) {
             self.selectedAsset = fetchResult.firstObject;
+            NSLog(@"✅ 成功通过assetIdentifier获取到PHAsset");
             [self extractEditingParameters:self.selectedAsset];
             return;
+        } else {
+            NSLog(@"❌ assetIdentifier存在但无法获取PHAsset");
         }
+    } else {
+        NSLog(@"❌ assetIdentifier为nil，使用备用方案");
     }
     
     // 方法2：如果assetIdentifier为nil，尝试通过图片数据获取PHAsset
